@@ -1,103 +1,103 @@
 // ============================================
-// src/routes/auth.routes.ts
-// Auth Routes - API Endpoint Definitions
+// src/routes/auth.routes.ts - PRODUCTION VERSION
 // ============================================
 
 import { Router } from 'express';
 import { AuthController } from '../controllers/auth.controller';
-import { AuthValidator } from '../validators/auth.validator';
 import { validate } from '../middleware/validation.middleware';
 import { authenticateJWT } from '../middleware/auth.middleware';
-import { authRateLimit, passwordResetRateLimit } from '../middleware/ratelimitRedis.middleware';
+import { AuthValidator } from '../validators/auth.validator';
+import { authRateLimit } from '../middleware/ratelimitRedis.middleware';
 
 const router = Router();
-const authController = new AuthController();
 
 // ============================================
 // PUBLIC ROUTES (No Authentication Required)
 // ============================================
 
 /**
- * @route   POST /api/auth/register
- * @desc    Register new user with phone + password
- * @access  Public
- */
-router.post(
-  '/register',
-  authRateLimit,
-  validate(AuthValidator.register),
-  authController.register
-);
-
-/**
- * @route   POST /api/auth/login
- * @desc    Login with phone + password/OTP
- * @access  Public
- */
-router.post(
-  '/login',
-  authRateLimit,
-  validate(AuthValidator.login),
-  authController.login
-);
-
-/**
- * @route   POST /api/auth/clerk/exchange
- * @desc    Exchange Clerk token for JWT (OAuth flow)
- * @access  Public
- */
-router.post(
-  '/clerk/exchange',
-  authRateLimit,
-  validate(AuthValidator.clerkExchange),
-  authController.clerkExchange
-);
-
-/**
- * @route   POST /api/auth/otp/send
+ * @route   POST /api/v1/auth/phone/send-otp
  * @desc    Send OTP to phone number
  * @access  Public
+ * @body    { phone: string }
  */
 router.post(
-  '/otp/send',
+  '/phone/send-otp',
   authRateLimit,
   validate(AuthValidator.sendOTP),
-  authController.sendOTP
+  AuthController.sendOTP
 );
 
 /**
- * @route   POST /api/auth/otp/verify
- * @desc    Verify OTP code
+ * @route   POST /api/v1/auth/phone/verify
+ * @desc    Verify OTP and login/register
  * @access  Public
+ * @body    { phone: string, otp: string }
  */
 router.post(
-  '/otp/verify',
+  '/phone/verify',
   authRateLimit,
   validate(AuthValidator.verifyOTP),
-  authController.verifyOTP
+  AuthController.verifyOTP
 );
 
 /**
- * @route   POST /api/auth/refresh
- * @desc    Refresh access token using refresh token
+ * @route   POST /api/v1/auth/phone/resend-otp
+ * @desc    Resend OTP to phone number
  * @access  Public
+ * @body    { phone: string }
+ */
+router.post(
+  '/phone/resend-otp',
+  authRateLimit,
+  validate(AuthValidator.resendOTP),
+  AuthController.resendOTP
+);
+
+/**
+ * @route   GET /api/v1/auth/oauth/google
+ * @desc    Get Google OAuth URL
+ * @access  Public
+ */
+router.get(
+  '/oauth/google',
+  AuthController.getGoogleAuthURL
+);
+
+/**
+ * @route   POST /api/v1/auth/oauth/callback
+ * @desc    Exchange Supabase access token for our JWT
+ * @access  Public
+ * @body    { accessToken: string }
+ */
+router.post(
+  '/oauth/callback',
+  validate(AuthValidator.oauthCallback),
+  AuthController.oauthCallback
+);
+
+/**
+ * @route   POST /api/v1/auth/refresh
+ * @desc    Refresh access token
+ * @access  Public
+ * @body    { refreshToken: string }
  */
 router.post(
   '/refresh',
-  validate(AuthValidator.refresh),
-  authController.refresh
+  validate(AuthValidator.refreshToken),
+  AuthController.refreshToken
 );
 
 /**
- * @route   POST /api/auth/password/reset
- * @desc    Reset password with OTP
- * @access  Public
+ * @route   POST /api/v1/auth/generate-token
+ * @desc    Generate JWT token for testing/admin (use with caution)
+ * @access  Public (Should be restricted in production)
+ * @body    { userId?: string, supabaseAuthId?: string }
  */
 router.post(
-  '/password/reset',
-  passwordResetRateLimit,
-  validate(AuthValidator.resetPassword),
-  authController.resetPassword
+  '/generate-token',
+  validate(AuthValidator.generateToken),
+  AuthController.generateToken
 );
 
 // ============================================
@@ -105,75 +105,25 @@ router.post(
 // ============================================
 
 /**
- * @route   POST /api/auth/logout
- * @desc    Logout user and revoke tokens
- * @access  Protected
- */
-router.post(
-  '/logout',
-  authenticateJWT,
-  authController.logout
-);
-
-/**
- * @route   GET /api/auth/me
- * @desc    Get current authenticated user
- * @access  Protected
+ * @route   GET /api/v1/auth/me
+ * @desc    Get current user
+ * @access  Private
  */
 router.get(
   '/me',
   authenticateJWT,
-  authController.getCurrentUser
+  AuthController.getCurrentUser
 );
 
-// ============================================
-// ADD THESE ROUTES TO auth.routes.ts
-// ============================================
-
 /**
- * @route   POST /api/auth/generate-token
- * @desc    Generate JWT token for existing user by user ID
- * @access  Public (or Protected with admin role)
- * 
- * Use Cases:
- * - After Clerk OAuth validation
- * - Admin token generation
- * - Testing purposes
+ * @route   POST /api/v1/auth/logout
+ * @desc    Logout user (revoke tokens)
+ * @access  Private
  */
 router.post(
-  '/generate-token',
-  validate(AuthValidator.generateToken),
-  authController.generateToken
-);
-
-/**
- * @route   POST /api/auth/generate-token/clerk
- * @desc    Generate JWT token by Clerk user ID
- * @access  Public
- * 
- * Flow:
- * 1. Validate Clerk user ID with Clerk API
- * 2. Find user in our database by phone/email
- * 3. Generate our JWT token
- */
-router.post(
-  '/generate-token/clerk',
-  validate(AuthValidator.generateTokenByClerkId),
-  authController.generateTokenByClerkId
-);
-
-// ============================================
-// HEALTH CHECK
-// ============================================
-
-/**
- * @route   GET /api/auth/health
- * @desc    Health check endpoint
- * @access  Public
- */
-router.get(
-  '/health',
-  authController.healthCheck
+  '/logout',
+  authenticateJWT,
+  AuthController.logout
 );
 
 export default router;

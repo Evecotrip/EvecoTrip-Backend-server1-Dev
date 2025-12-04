@@ -1,625 +1,523 @@
 // ============================================
-// src/controllers/auth.controller.ts
-// Auth Controller - Request Handlers
+// src/controllers/auth.controller.ts - PRODUCTION VERSION
+// Complete Authentication Controller with Enhanced Error Handling
 // ============================================
 
-import { Request, Response, NextFunction } from 'express';
+import { Response } from 'express';
 import { AuthService } from '../services/auth.service';
-import { prisma } from '../config/database.config';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
+import { prisma } from '../config/database.config';
+import { CacheService } from '../cache/cache.service';
+
+const authService = new AuthService(prisma);
+const cache = CacheService.getInstance();
 
 export class AuthController {
-  private authService: AuthService;
+    // ============================================
+    // 1. SEND OTP
+    // POST /api/v1/auth/phone/send-otp
+    // ============================================
+    static async sendOTP(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const { phone } = req.body;
 
-  constructor() {
-    this.authService = new AuthService(prisma);
-  }
+            await authService.sendOTP({ phone });
 
-  // ============================================
-  // 1. REGISTER WITH PHONE + PASSWORD
-  // ============================================
-  register = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { phone, email, password, firstName, lastName } = req.body;
+            return res.status(200).json({
+                success: true,
+                message: 'OTP sent successfully. Please check your phone.',
+                data: {
+                    phone,
+                    expiresIn: 600, // 10 minutes
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Send OTP error:', error);
 
-      const result = await this.authService.register({
-        phone,
-        email,
-        password,
-        firstName,
-        lastName,
-      });
+            if (error.message === 'OTP_RATE_LIMIT_EXCEEDED') {
+                return res.status(429).json({
+                    success: false,
+                    error: 'RATE_LIMIT_EXCEEDED',
+                    message: 'Too many OTP requests. Please try again after 15 minutes.',
+                });
+            }
 
-      res.status(201).json({
-        success: true,
-        message: 'User registered successfully',
-        data: {
-          user: {
-            id: result.user.id,
-            phone: result.user.phone,
-            email: result.user.email,
-            firstName: result.user.firstName,
-            lastName: result.user.lastName,
-            isVerified: result.user.isVerified,
-          },
-          token: result.token,
-          refreshToken: result.refreshToken,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Register controller error:', error.message);
-
-      if (error.message === 'USER_ALREADY_EXISTS') {
-        res.status(409).json({
-          success: false,
-          error: 'USER_ALREADY_EXISTS',
-          message: 'A user with this phone number already exists',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (error.message === 'EMAIL_ALREADY_EXISTS') {
-        res.status(409).json({
-          success: false,
-          error: 'EMAIL_ALREADY_EXISTS',
-          message: 'A user with this email already exists',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      next(error);
+            return res.status(500).json({
+                success: false,
+                error: 'SEND_OTP_FAILED',
+                message: 'Failed to send OTP. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 2. LOGIN WITH PHONE + PASSWORD/OTP
-  // ============================================
-  login = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { phone, password, otpCode } = req.body;
+    // ============================================
+    // 2. VERIFY OTP & LOGIN/REGISTER
+    // POST /api/v1/auth/phone/verify
+    // ============================================
+    static async verifyOTP(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const { phone, otp } = req.body;
 
-      const result = await this.authService.login({
-        phone,
-        password,
-        otpCode,
-      });
+            const result = await authService.verifyOTPAndLogin({ phone, otp });
 
-      res.status(200).json({
-        success: true,
-        message: 'Login successful',
-        data: {
-          user: {
-            id: result.user.id,
-            phone: result.user.phone,
-            email: result.user.email,
-            firstName: result.user.firstName,
-            lastName: result.user.lastName,
-            profilePhotoUrl: result.user.profilePhotoUrl,
-            isVerified: result.user.isVerified,
-          },
-          token: result.token,
-          refreshToken: result.refreshToken,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Login controller error:', error.message);
+            return res.status(200).json({
+                success: true,
+                message: 'Login successful',
+                data: {
+                    user: {
+                        id: result.user.id,
+                        phone: result.user.phone,
+                        email: result.user.email,
+                        firstName: result.user.firstName,
+                        lastName: result.user.lastName,
+                        profilePhotoUrl: result.user.profilePhotoUrl,
+                        isVerified: result.user.isVerified,
+                        createdAt: result.user.createdAt,
+                    },
+                    token: result.token,
+                    refreshToken: result.refreshToken,
+                    expiresIn: '7d',
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Verify OTP error:', error);
 
-      if (error.message === 'INVALID_CREDENTIALS') {
-        res.status(401).json({
-          success: false,
-          error: 'INVALID_CREDENTIALS',
-          message: 'Invalid phone number or password',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'OTP_VERIFICATION_FAILED') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'INVALID_OTP',
+                    message: 'Invalid or expired OTP. Please try again.',
+                });
+            }
 
-      if (error.message === 'USER_SUSPENDED') {
-        res.status(403).json({
-          success: false,
-          error: 'USER_SUSPENDED',
-          message: 'Your account has been suspended. Please contact support.',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'USER_INACTIVE') {
+                return res.status(403).json({
+                    success: false,
+                    error: 'USER_INACTIVE',
+                    message: 'Your account is inactive. Please contact support.',
+                });
+            }
 
-      if (error.message === 'PASSWORD_NOT_SET') {
-        res.status(400).json({
-          success: false,
-          error: 'PASSWORD_NOT_SET',
-          message: 'Password not set for this account. Please use OTP login.',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'USER_SUSPENDED') {
+                return res.status(403).json({
+                    success: false,
+                    error: 'USER_SUSPENDED',
+                    message: 'Your account has been suspended. Please contact support.',
+                });
+            }
 
-      if (error.message === 'PASSWORD_OR_OTP_REQUIRED') {
-        res.status(400).json({
-          success: false,
-          error: 'PASSWORD_OR_OTP_REQUIRED',
-          message: 'Either password or OTP is required for login',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'RIDER_ROLE_NOT_FOUND') {
+                return res.status(500).json({
+                    success: false,
+                    error: 'CONFIGURATION_ERROR',
+                    message: 'System configuration error. Please contact support.',
+                });
+            }
 
-      next(error);
+            return res.status(500).json({
+                success: false,
+                error: 'VERIFICATION_FAILED',
+                message: 'Failed to verify OTP. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 3. CLERK AUTHENTICATION (OAuth Exchange)
-  // ============================================
-  clerkExchange = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { clerkUserId } = req.body;
+    // ============================================
+    // 3. GET GOOGLE OAUTH URL
+    // GET /api/v1/auth/oauth/google
+    // ============================================
+    static async getGoogleAuthURL(_req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const result = await authService.getGoogleAuthURL();
 
-      const result = await this.authService.clerkExchange({
-        clerkUserId,
-      });
+            return res.status(200).json({
+                success: true,
+                message: 'OAuth URL generated successfully',
+                data: {
+                    url: result.url,
+                    provider: 'google',
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Get Google OAuth URL error:', error);
 
-      res.status(200).json({
-        success: true,
-        message: 'Clerk authentication successful',
-        data: {
-          user: {
-            id: result.user.id,
-            phone: result.user.phone,
-            email: result.user.email,
-            firstName: result.user.firstName,
-            lastName: result.user.lastName,
-            profilePhotoUrl: result.user.profilePhotoUrl,
-            isVerified: result.user.isVerified,
-          },
-          token: result.token,
-          refreshToken: result.refreshToken,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Clerk exchange controller error:', error.message);
-
-      if (error.message === 'CLERK_USER_NOT_FOUND') {
-        res.status(404).json({
-          success: false,
-          error: 'CLERK_USER_NOT_FOUND',
-          message: 'Clerk user not found',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (error.message === 'PHONE_OR_EMAIL_REQUIRED') {
-        res.status(400).json({
-          success: false,
-          error: 'PHONE_OR_EMAIL_REQUIRED',
-          message: 'Phone number or email is required',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      next(error);
+            return res.status(500).json({
+                success: false,
+                error: 'OAUTH_URL_FAILED',
+                message: 'Failed to generate OAuth URL. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 4. SEND OTP
-  // ============================================
-  sendOTP = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { phone, purpose } = req.body;
+    // ============================================
+    // 4. OAUTH CALLBACK (Exchange Supabase Token)
+    // POST /api/v1/auth/oauth/callback
+    // ============================================
+    static async oauthCallback(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const { accessToken } = req.body;
 
-      await this.authService.sendOTP(phone, purpose);
+            const result = await authService.supabaseExchange({ accessToken });
 
-      res.status(200).json({
-        success: true,
-        message: 'OTP sent successfully',
-        data: {
-          phone,
-          expiresIn: 600, // 10 minutes in seconds
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Send OTP controller error:', error.message);
+            return res.status(200).json({
+                success: true,
+                message: 'OAuth login successful',
+                data: {
+                    user: {
+                        id: result.user.id,
+                        phone: result.user.phone,
+                        email: result.user.email,
+                        firstName: result.user.firstName,
+                        lastName: result.user.lastName,
+                        profilePhotoUrl: result.user.profilePhotoUrl,
+                        isVerified: result.user.isVerified,
+                        createdAt: result.user.createdAt,
+                    },
+                    token: result.token,
+                    refreshToken: result.refreshToken,
+                    expiresIn: '7d',
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ OAuth callback error:', error);
 
-      if (error.message === 'USER_NOT_FOUND') {
-        res.status(404).json({
-          success: false,
-          error: 'USER_NOT_FOUND',
-          message: 'User with this phone number not found',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'INVALID_SUPABASE_TOKEN') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'INVALID_TOKEN',
+                    message: 'Invalid Supabase access token.',
+                });
+            }
 
-      if (error.message === 'USER_ALREADY_EXISTS') {
-        res.status(409).json({
-          success: false,
-          error: 'USER_ALREADY_EXISTS',
-          message: 'User with this phone number already exists',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'USER_NOT_REGISTERED') {
+                return res.status(404).json({
+                    success: false,
+                    error: 'USER_NOT_FOUND',
+                    message: 'User not found. Please register first using phone OTP.',
+                });
+            }
 
-      next(error);
+            if (error.message === 'USER_INACTIVE') {
+                return res.status(403).json({
+                    success: false,
+                    error: 'USER_INACTIVE',
+                    message: 'Your account is inactive. Please contact support.',
+                });
+            }
+
+            if (error.message === 'USER_SUSPENDED') {
+                return res.status(403).json({
+                    success: false,
+                    error: 'USER_SUSPENDED',
+                    message: 'Your account has been suspended. Please contact support.',
+                });
+            }
+
+            return res.status(500).json({
+                success: false,
+                error: 'OAUTH_CALLBACK_FAILED',
+                message: 'Failed to complete OAuth login. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 5. VERIFY OTP
-  // ============================================
-  verifyOTP = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { phone, otpCode, purpose } = req.body;
+    // ============================================
+    // 5. REFRESH TOKEN
+    // POST /api/v1/auth/refresh
+    // ============================================
+    static async refreshToken(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const { refreshToken } = req.body;
 
-      const result = await this.authService.verifyOTP({
-        phone,
-        otpCode,
-        purpose,
-      });
+            const result = await authService.refreshAccessToken(refreshToken);
 
-      res.status(200).json({
-        success: true,
-        message: 'OTP verified successfully',
-        data: {
-          verified: result.success,
-          userId: result.userId,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Verify OTP controller error:', error.message);
+            return res.status(200).json({
+                success: true,
+                message: 'Token refreshed successfully',
+                data: {
+                    token: result.token,
+                    refreshToken: result.refreshToken,
+                    expiresIn: '7d',
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Refresh token error:', error);
 
-      if (error.message === 'OTP_NOT_FOUND') {
-        res.status(404).json({
-          success: false,
-          error: 'OTP_NOT_FOUND',
-          message: 'OTP not found or already used',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'INVALID_REFRESH_TOKEN') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'INVALID_REFRESH_TOKEN',
+                    message: 'Invalid refresh token.',
+                });
+            }
 
-      if (error.message === 'OTP_EXPIRED') {
-        res.status(400).json({
-          success: false,
-          error: 'OTP_EXPIRED',
-          message: 'OTP has expired. Please request a new one.',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'REFRESH_TOKEN_REVOKED') {
+                return res.status(401).json({
+                    success: false,
+                    error: 'TOKEN_REVOKED',
+                    message: 'Refresh token has been revoked. Please login again.',
+                });
+            }
 
-      if (error.message === 'MAX_ATTEMPTS_EXCEEDED') {
-        res.status(429).json({
-          success: false,
-          error: 'MAX_ATTEMPTS_EXCEEDED',
-          message: 'Maximum verification attempts exceeded. Please request a new OTP.',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'REFRESH_TOKEN_EXPIRED') {
+                return res.status(401).json({
+                    success: false,
+                    error: 'TOKEN_EXPIRED',
+                    message: 'Refresh token has expired. Please login again.',
+                });
+            }
 
-      if (error.message === 'INVALID_OTP') {
-        res.status(400).json({
-          success: false,
-          error: 'INVALID_OTP',
-          message: 'Invalid OTP code',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (error.message === 'USER_INACTIVE' || error.message === 'USER_SUSPENDED') {
+                return res.status(403).json({
+                    success: false,
+                    error: error.message,
+                    message: 'Your account is not active. Please contact support.',
+                });
+            }
 
-      next(error);
+            return res.status(500).json({
+                success: false,
+                error: 'REFRESH_FAILED',
+                message: 'Failed to refresh token. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 6. REFRESH TOKEN
-  // ============================================
-  refresh = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { refreshToken } = req.body;
+    // ============================================
+    // 6. LOGOUT
+    // POST /api/v1/auth/logout
+    // ============================================
+    static async logout(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const userId = req.user?.id;
+            const token = req.headers.authorization?.split(' ')[1];
 
-      const result = await this.authService.refreshAccessToken(refreshToken);
+            if (!userId || !token) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'BAD_REQUEST',
+                    message: 'User ID or token not found.',
+                });
+            }
 
-      res.status(200).json({
-        success: true,
-        message: 'Token refreshed successfully',
-        data: {
-          token: result.token,
-          refreshToken: result.refreshToken,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Refresh token controller error:', error.message);
+            await authService.logout(userId, token);
 
-      if (error.message === 'INVALID_REFRESH_TOKEN') {
-        res.status(401).json({
-          success: false,
-          error: 'INVALID_REFRESH_TOKEN',
-          message: 'Invalid refresh token',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            return res.status(200).json({
+                success: true,
+                message: 'Logged out successfully',
+            });
+        } catch (error: any) {
+            console.error('❌ Logout error:', error);
 
-      if (error.message === 'TOKEN_REVOKED') {
-        res.status(401).json({
-          success: false,
-          error: 'TOKEN_REVOKED',
-          message: 'Refresh token has been revoked',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (error.message === 'TOKEN_EXPIRED') {
-        res.status(401).json({
-          success: false,
-          error: 'TOKEN_EXPIRED',
-          message: 'Refresh token has expired',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      next(error);
+            return res.status(500).json({
+                success: false,
+                error: 'LOGOUT_FAILED',
+                message: 'Failed to logout. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 7. LOGOUT
-  // ============================================
-  logout = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const userId = req.user?.id;
-      const token = req.headers.authorization?.split(' ')[1];
+    // ============================================
+    // 7. GET CURRENT USER
+    // GET /api/v1/auth/me
+    // ============================================
+    static async getCurrentUser(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const userId = req.user?.id;
 
-      if (!userId || !token) {
-        res.status(401).json({
-          success: false,
-          error: 'UNAUTHORIZED',
-          message: 'Authentication required',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            if (!userId) {
+                return res.status(401).json({
+                    success: false,
+                    error: 'UNAUTHORIZED',
+                    message: 'User not authenticated.',
+                });
+            }
 
-      await this.authService.logout(userId, token);
+            const user = await authService.getCurrentUser(userId);
 
-      res.status(200).json({
-        success: true,
-        message: 'Logout successful',
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Logout controller error:', error.message);
-      next(error);
+            return res.status(200).json({
+                success: true,
+                message: 'User retrieved successfully',
+                data: {
+                    user: {
+                        id: user.id,
+                        phone: user.phone,
+                        email: user.email,
+                        firstName: user.firstName,
+                        lastName: user.lastName,
+                        profilePhotoUrl: user.profilePhotoUrl,
+                        dateOfBirth: user.dateOfBirth,
+                        gender: user.gender,
+                        isVerified: user.isVerified,
+                        isActive: user.isActive,
+                        isSuspended: user.isSuspended,
+                        createdAt: user.createdAt,
+                        lastLoginAt: user.lastLoginAt,
+                    },
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Get current user error:', error);
+
+            if (error.message === 'USER_NOT_FOUND') {
+                return res.status(404).json({
+                    success: false,
+                    error: 'USER_NOT_FOUND',
+                    message: 'User not found.',
+                });
+            }
+
+            return res.status(500).json({
+                success: false,
+                error: 'FETCH_USER_FAILED',
+                message: 'Failed to fetch user. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 8. RESET PASSWORD
-  // ============================================
-  resetPassword = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { phone, otpCode, newPassword } = req.body;
+    // ============================================
+    // 8. RESEND OTP
+    // POST /api/v1/auth/phone/resend-otp
+    // ============================================
+    static async resendOTP(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const { phone } = req.body;
 
-      await this.authService.resetPassword(phone, otpCode, newPassword);
+            // Check if last OTP was sent recently (prevent spam)
+            const lastSentKey = `otp:last_sent:${phone}`;
+            const lastSent = await cache.get<number>(lastSentKey);
 
-      res.status(200).json({
-        success: true,
-        message: 'Password reset successfully',
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Reset password controller error:', error.message);
+            if (lastSent) {
+                const timeSinceLastSent = Date.now() - lastSent;
+                if (timeSinceLastSent < 60000) { // 1 minute
+                    return res.status(429).json({
+                        success: false,
+                        error: 'OTP_RESEND_TOO_SOON',
+                        message: 'Please wait 1 minute before requesting a new OTP.',
+                        retryAfter: Math.ceil((60000 - timeSinceLastSent) / 1000),
+                    });
+                }
+            }
 
-      if (error.message === 'USER_NOT_FOUND') {
-        res.status(404).json({
-          success: false,
-          error: 'USER_NOT_FOUND',
-          message: 'User not found',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            await authService.sendOTP({ phone });
 
-      next(error);
+            return res.status(200).json({
+                success: true,
+                message: 'OTP resent successfully. Please check your phone.',
+                data: {
+                    phone,
+                    expiresIn: 600, // 10 minutes
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Resend OTP error:', error);
+
+            if (error.message === 'OTP_RATE_LIMIT_EXCEEDED') {
+                return res.status(429).json({
+                    success: false,
+                    error: 'RATE_LIMIT_EXCEEDED',
+                    message: 'Too many OTP requests. Please try again after 15 minutes.',
+                });
+            }
+
+            return res.status(500).json({
+                success: false,
+                error: 'RESEND_OTP_FAILED',
+                message: 'Failed to resend OTP. Please try again.',
+            });
+        }
     }
-  };
 
-  // ============================================
-  // 9. GET CURRENT USER (Protected Route)
-  // ============================================
-  getCurrentUser = async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const userId = req.user?.id;
+    // ============================================
+    // 9. GENERATE JWT TOKEN (ADMIN/TESTING USE)
+    // POST /api/v1/auth/generate-token
+    // ============================================
+    static async generateToken(req: AuthenticatedRequest, res: Response): Promise<any> {
+        try {
+            const { userId, supabaseAuthId } = req.body;
 
-      if (!userId) {
-        res.status(401).json({
-          success: false,
-          error: 'UNAUTHORIZED',
-          message: 'Authentication required',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            // Find user by userId or supabaseAuthId
+            const user = await prisma.user.findFirst({
+                where: {
+                    OR: [
+                        { id: userId || undefined },
+                        { supabaseAuthId: supabaseAuthId || undefined },
+                    ],
+                },
+                include: {
+                    userRoles: {
+                        include: {
+                            role: true,
+                        },
+                    },
+                },
+            });
 
-      const user = await this.authService.getUserById(userId);
+            if (!user) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'USER_NOT_FOUND',
+                    message: 'User not found with provided userId or supabaseAuthId.',
+                });
+            }
 
-      if (!user) {
-        res.status(404).json({
-          success: false,
-          error: 'USER_NOT_FOUND',
-          message: 'User not found',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+            // Check if user is active
+            if (!user.isActive) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'USER_INACTIVE',
+                    message: 'User account is inactive.',
+                });
+            }
 
-      res.status(200).json({
-        success: true,
-        data: {
-          user: {
-            id: user.id,
-            phone: user.phone,
-            email: user.email,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            profilePhotoUrl: user.profilePhotoUrl,
-            dateOfBirth: user.dateOfBirth,
-            gender: user.gender,
-            isVerified: user.isVerified,
-            createdAt: user.createdAt,
-            lastLoginAt: user.lastLoginAt,
-          },
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Get current user controller error:', error.message);
-      next(error);
+            if (user.isSuspended) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'USER_SUSPENDED',
+                    message: 'User account is suspended.',
+                });
+            }
+
+            // Get primary role
+            const primaryRole = user.userRoles[0]?.role?.name || 'RIDER';
+
+            // Generate JWT token
+            const { generateToken } = await import('../utils/jwt.utils');
+            const token = generateToken({
+                id: user.id,
+                supabaseAuthId: user.supabaseAuthId || '',
+                phone: user.phone,
+                email: user.email || '',
+                firstName: user.firstName || '',
+                lastName: user.lastName || '',
+                role: primaryRole,
+            });
+
+            return res.status(200).json({
+                success: true,
+                message: 'JWT token generated successfully',
+                data: {
+                    user: {
+                        id: user.id,
+                        phone: user.phone,
+                        email: user.email,
+                        firstName: user.firstName,
+                        lastName: user.lastName,
+                        role: primaryRole,
+                    },
+                    token,
+                    tokenType: 'Bearer',
+                    expiresIn: '7d',
+                },
+            });
+        } catch (error: any) {
+            console.error('❌ Generate token error:', error);
+
+            return res.status(500).json({
+                success: false,
+                error: 'TOKEN_GENERATION_FAILED',
+                message: 'Failed to generate token. Please try again.',
+            });
+        }
     }
-  };
-
-  // ============================================
-  // 11. GENERATE TOKEN BY USER ID
-  // ============================================
-  generateToken = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { userId, clerkUserId } = req.body;
-
-      const result = await this.authService.generateUserToken(userId, clerkUserId);
-
-      res.status(200).json({
-        success: true,
-        message: 'Token generated successfully',
-        data: {
-          user: {
-            id: result.user.id,
-            phone: result.user.phone,
-            email: result.user.email,
-            firstName: result.user.firstName,
-            lastName: result.user.lastName,
-            profilePhotoUrl: result.user.profilePhotoUrl,
-            isVerified: result.user.isVerified,
-          },
-          token: result.token,
-          refreshToken: result.refreshToken,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Generate token controller error:', error.message);
-
-      if (error.message === 'USER_NOT_FOUND') {
-        res.status(404).json({
-          success: false,
-          error: 'USER_NOT_FOUND',
-          message: 'User not found',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (error.message === 'USER_INACTIVE') {
-        res.status(403).json({
-          success: false,
-          error: 'USER_INACTIVE',
-          message: 'User account is inactive',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (error.message === 'USER_SUSPENDED') {
-        res.status(403).json({
-          success: false,
-          error: 'USER_SUSPENDED',
-          message: 'User account is suspended',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      next(error);
-    }
-  };
-
-  // ============================================
-  // 12. GENERATE TOKEN BY CLERK ID
-  // ============================================
-  generateTokenByClerkId = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { clerkUserId } = req.body;
-
-      const result = await this.authService.generateTokenByClerkId(clerkUserId);
-
-      res.status(200).json({
-        success: true,
-        message: 'Token generated successfully',
-        data: {
-          user: {
-            id: result.user.id,
-            phone: result.user.phone,
-            email: result.user.email,
-            firstName: result.user.firstName,
-            lastName: result.user.lastName,
-            profilePhotoUrl: result.user.profilePhotoUrl,
-            isVerified: result.user.isVerified,
-          },
-          token: result.token,
-          refreshToken: result.refreshToken,
-        },
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error('❌ Generate token by Clerk ID controller error:', error.message);
-
-      if (error.message === 'CLERK_USER_NOT_FOUND') {
-        res.status(404).json({
-          success: false,
-          error: 'CLERK_USER_NOT_FOUND',
-          message: 'Clerk user not found',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (error.message === 'USER_NOT_FOUND_IN_DATABASE') {
-        res.status(404).json({
-          success: false,
-          error: 'USER_NOT_FOUND_IN_DATABASE',
-          message: 'User not found in our database. Please complete registration first.',
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-
-      next(error);
-    }
-  };
-
-  // ============================================
-  // 10. HEALTH CHECK
-  // ============================================
-  healthCheck = async (res: Response): Promise<void> => {
-    res.status(200).json({
-      success: true,
-      message: 'Auth Service is healthy',
-      service: 'auth-service',
-      timestamp: new Date().toISOString(),
-    });
-  };
 }
